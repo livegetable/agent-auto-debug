@@ -35,8 +35,13 @@ def get_user():
 @app.route("/api/calculate", methods=["POST"])
 def calculate():
     payload = request.get_json(silent=True) or {}
-    a = payload.get("a", 0)
-    b = payload.get("b", 0)
+    try:
+        a = float(payload.get("a", 0))
+        b = float(payload.get("b", 0))
+    except (ValueError, TypeError):
+        return jsonify({"error": "invalid number input"}), 400
+    if b == 0:
+        return jsonify({"error": "division by zero"}), 400
     result = "Result: " + str(a / b)
     return jsonify({"result": result})
 
@@ -54,7 +59,7 @@ def apply_discount():
 def greet():
     payload = request.get_json(silent=True) or {}
     name = payload.get("name")
-    greeting = name.upper()
+    greeting = (name or "").upper()
     return jsonify({"greeting": greeting})
 
 

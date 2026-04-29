@@ -27,14 +27,16 @@ def test_get_user_existing(client):
 
 def test_get_user_missing_key(client):
     resp = client.get("/api/user", json={})
-    assert resp.status_code == 200
+    assert resp.status_code == 400
+    data = resp.get_json()
+    assert "error" in data
 
 
 def test_get_user_nonexistent(client):
     resp = client.get("/api/user", json={"user_id": "999"})
-    assert resp.status_code == 200
+    assert resp.status_code == 404
     data = resp.get_json()
-    assert data is not None
+    assert "error" in data
 
 
 def test_calculate_normal(client):
@@ -46,9 +48,9 @@ def test_calculate_normal(client):
 
 def test_calculate_zero_division(client):
     resp = client.post("/api/calculate", json={"a": 10, "b": 0})
-    assert resp.status_code == 200
+    assert resp.status_code == 400
     data = resp.get_json()
-    assert "result" in data
+    assert "error" in data
 
 
 def test_calculate_string_input(client):
@@ -56,6 +58,13 @@ def test_calculate_string_input(client):
     assert resp.status_code == 200
     data = resp.get_json()
     assert "result" in data
+
+
+def test_calculate_invalid_input(client):
+    resp = client.post("/api/calculate", json={"a": "abc", "b": 2})
+    assert resp.status_code == 400
+    data = resp.get_json()
+    assert "error" in data
 
 
 def test_discount_normal(client):
