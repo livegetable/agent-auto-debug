@@ -1,0 +1,347 @@
+import re
+import os
+import subprocess
+from agent.tools.read_log import read_log
+from agent.tools.read_code import read_file, search_code
+from agent.tools.run_test import run_test
+from agent.tools.git_ops import (
+    create_branch, commit_changes, push_branch, create_pr,
+    get_current_branch, checkout_branch,
+)
+from agent.tools.notify_feishu import send_success_card, send_failure_card
+from agent.llm import analyze_and_fix
+from agent.records.store import save_record, generate_fix_id
+from agent.config import PROJECT_ROOT, TEST_COMMAND, MAX_CHANGED_FILES, BRANCH_PREFIX
+
+
+def extract_traceback_info(log_content: str) -> dict:
+    tb_match = re.search(
+        r"Traceback \(most recent call last\):[\s\S]*?(\w+Error|\w+Exception): (.+?)(?:\n|$)",
+        log_content,
+    )
+    if not tb_match:
+        return {"error_type": "Unknown", "error_message": "", "traceback": log_content}
+
+    full_traceback = tb_match.group(0)
+    error_type = tb_match.group(1)
+    error_message = tb_match.group(2)
+
+    file_matches = re.findall(
+        r'File "(.+?)", line (\d+)',
+        full_traceback,
+    )
+
+    files = []
+    for fpath, lineno in file_matches:
+        rel = os.path.relpath(fpath, PROJECT_ROOT).replace("\\", "/")
+        files.append({"file": rel, "line": int(lineno)})
+
+    return {
+        "error_type": error_type,
+        "error_message": error_message,
+        "traceback": full_traceback,
+        "files": files,
+    }
+
+
+def gather_code_context(traceback_info: dict) -> dict[str, str]:
+    code_context = {}
+    seen = set()
+
+    for file_info in traceback_info.get("files", []):
+        fpath = file_info["file"]
+        if fpath in seen:
+            continue
+        seen.add(fpath)
+
+        result = read_file(fpath)
+        if result["success"]:
+            code_context[fpath] = result["content"]
+
+        test_path = _find_test_file(fpath)
+        if test_path and test_path not in seen:
+            seen.add(test_path)
+            result = read_file(test_path)
+            if result["success"]:
+                code_context[test_path] = result["content"]
+
+    return code_context
+
+
+def _find_test_file(source_path: str) -> str | None:
+    parts = source_path.replace("\\", "/").split("/")
+    filename = parts[-1]
+    name_without_ext = os.path.splitext(filename)[0]
+    test_filename = f"test_{name_without_ext}.py"
+
+    search_result = search_code(test_filename.replace(".py", ""), file_glob="test_*.py")
+    if search_result["success"] and search_result["results"]:
+        for r in search_result["results"]:
+            if r["file"].endswith(test_filename):
+                return r["file"]
+
+    return None
+
+
+def apply_patch(patch_text: str) -> dict:
+    if not patch_text.strip():
+        return {"success": False, "error": "Empty patch"}
+
+    patch_file = os.path.join(PROJECT_ROOT, "_agent_patch.diff")
+    try:
+        with open(patch_file, "w", encoding="utf-8") as f:
+            f.write(patch_text)
+
+        result = subprocess.run(
+            ["git", "apply", "--check", patch_file],
+            capture_output=True, text=True, cwd=PROJECT_ROOT,
+        )
+        if result.returncode != 0:
+            return {"success": False, "error": f"Patch check failed: {result.stderr}"}
+
+        result = subprocess.run(
+            ["git", "apply", patch_file],
+            capture_output=True, text=True, cwd=PROJECT_ROOT,
+        )
+        if result.returncode != 0:
+            return {"success": False, "error": f"Patch apply failed: {result.stderr}"}
+
+        return {"success": True}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+    finally:
+        if os.path.isfile(patch_file):
+            os.remove(patch_file)
+
+
+def revert_changes() -> dict:
+    try:
+        subprocess.run(
+            ["git", "checkout", "--", "."],
+            capture_output=True, text=True, cwd=PROJECT_ROOT,
+        )
+        subprocess.run(
+            ["git", "clean", "-fd"],
+            capture_output=True, text=True, cwd=PROJECT_ROOT,
+        )
+        return {"success": True}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def run_fix_workflow(log_path: str | None = None, max_attempts: int = 3) -> dict:
+    fix_id = generate_fix_id()
+    original_branch = get_current_branch()
+    print(f"[Agent] Starting fix workflow: {fix_id}")
+
+    log_result = read_log(log_path)
+    if not log_result["success"]:
+        record = _build_record(fix_id, "traceback_log", "Unknown", "", [], "failed",
+                               error="Failed to read log file")
+        save_record(record)
+        return record
+
+    print("[Agent] Step 1: Reading and parsing traceback...")
+    traceback_info = extract_traceback_info(log_result["content"])
+    if traceback_info["error_type"] == "Unknown":
+        record = _build_record(fix_id, "traceback_log", "Unknown", "", [], "failed",
+                               error="Could not parse traceback from log")
+        save_record(record)
+        return record
+
+    print(f"[Agent] Detected error: {traceback_info['error_type']}: {traceback_info['error_message']}")
+
+    print("[Agent] Step 2: Gathering code context...")
+    code_context = gather_code_context(traceback_info)
+    print(f"[Agent] Loaded {len(code_context)} files for context")
+
+    for attempt in range(1, max_attempts + 1):
+        print(f"[Agent] Step 3: Analyzing root cause and generating patch (attempt {attempt}/{max_attempts})...")
+        llm_result = analyze_and_fix(
+            traceback_text=traceback_info["traceback"],
+            code_context=code_context,
+            test_command=TEST_COMMAND,
+        )
+
+        if not llm_result.get("patch"):
+            print("[Agent] LLM did not generate a patch")
+            continue
+
+        if len(llm_result.get("changed_files", [])) > MAX_CHANGED_FILES:
+            print(f"[Agent] Patch changes too many files ({len(llm_result['changed_files'])}), skipping")
+            continue
+
+        print(f"[Agent] Root cause: {llm_result['root_cause']}")
+        print(f"[Agent] Confidence: {llm_result.get('confidence', 0)}")
+
+        print("[Agent] Step 4: Applying patch...")
+        apply_result = apply_patch(llm_result["patch"])
+        if not apply_result["success"]:
+            print(f"[Agent] Patch apply failed: {apply_result['error']}")
+            revert_changes()
+            continue
+
+        print("[Agent] Step 5: Running tests...")
+        test_result = run_test()
+        if not test_result["success"]:
+            print(f"[Agent] Tests failed after patch (attempt {attempt})")
+            print(f"[Agent] Test output:\n{test_result['stdout']}\n{test_result['stderr']}")
+            revert_changes()
+            code_context_updated = {}
+            for fpath in llm_result.get("changed_files", []):
+                r = read_file(fpath)
+                if r["success"]:
+                    code_context_updated[fpath] = r["content"]
+            code_context.update(code_context_updated)
+            continue
+
+        print("[Agent] Tests passed! Proceeding with git operations...")
+
+        print("[Agent] Step 6: Creating branch and committing...")
+        branch_name = f"{BRANCH_PREFIX}-{fix_id}"
+        branch_result = create_branch(branch_name)
+        if not branch_result["success"]:
+            print(f"[Agent] Branch creation failed: {branch_result['error']}")
+            revert_changes()
+            record = _build_record(
+                fix_id, "traceback_log", traceback_info["error_type"],
+                llm_result["root_cause"], llm_result.get("changed_files", []),
+                "failed", error=f"Branch creation failed: {branch_result['error']}",
+            )
+            save_record(record)
+            return record
+
+        commit_msg = f"fix({fix_id}): {llm_result['root_cause'][:80]}"
+        commit_result = commit_changes(commit_msg)
+        if not commit_result["success"]:
+            print(f"[Agent] Commit failed: {commit_result['error']}")
+            record = _build_record(
+                fix_id, "traceback_log", traceback_info["error_type"],
+                llm_result["root_cause"], llm_result.get("changed_files", []),
+                "failed", error=f"Commit failed: {commit_result['error']}",
+                branch=branch_name,
+            )
+            save_record(record)
+            return record
+
+        print("[Agent] Step 7: Pushing and creating PR...")
+        push_result = push_branch(branch_name)
+        pr_url = ""
+        if push_result["success"]:
+            pr_body = _build_pr_body(fix_id, traceback_info, llm_result, test_result)
+            pr_result = create_pr(
+                title=f"[Agent Fix] {fix_id}: {traceback_info['error_type']}",
+                body=pr_body,
+                head=branch_name,
+            )
+            if pr_result["success"]:
+                pr_url = pr_result["pr_url"]
+                print(f"[Agent] PR created: {pr_url}")
+            else:
+                print(f"[Agent] PR creation failed: {pr_result['error']}")
+        else:
+            print(f"[Agent] Push failed: {push_result['error']}")
+
+        print("[Agent] Step 8: Sending Feishu notification...")
+        feishu_result = send_success_card(
+            fix_id=fix_id,
+            error_type=traceback_info["error_type"],
+            root_cause=llm_result["root_cause"],
+            branch=branch_name,
+            pr_url=pr_url,
+            changed_files=llm_result.get("changed_files", []),
+        )
+        feishu_notified = feishu_result.get("success", False)
+
+        record = _build_record(
+            fix_id, "traceback_log", traceback_info["error_type"],
+            llm_result["root_cause"], llm_result.get("changed_files", []),
+            "success", branch=branch_name, pr_url=pr_url,
+            feishu_notified=feishu_notified,
+        )
+        save_record(record)
+        print(f"[Agent] Fix workflow completed successfully: {fix_id}")
+        return record
+
+    print(f"[Agent] All {max_attempts} attempts failed")
+
+    feishu_result = send_failure_card(
+        fix_id=fix_id,
+        error_type=traceback_info["error_type"],
+        root_cause="Auto-fix failed after multiple attempts",
+        reason="Could not generate a patch that passes all tests",
+    )
+
+    record = _build_record(
+        fix_id, "traceback_log", traceback_info["error_type"],
+        "Auto-fix failed after multiple attempts", [], "failed",
+        feishu_notified=feishu_result.get("success", False),
+    )
+    save_record(record)
+    return record
+
+
+def _build_record(
+    fix_id: str,
+    source: str,
+    error_type: str,
+    root_cause: str,
+    changed_files: list[str],
+    status: str,
+    branch: str = "",
+    pr_url: str = "",
+    feishu_notified: bool = False,
+    error: str = "",
+) -> dict:
+    record = {
+        "id": fix_id,
+        "source": source,
+        "error_type": error_type,
+        "root_cause": root_cause,
+        "changed_files": changed_files,
+        "test_result": "passed" if status == "success" else "failed",
+        "branch": branch,
+        "pr_url": pr_url,
+        "feishu_notified": feishu_notified,
+        "status": status,
+    }
+    if error:
+        record["error"] = error
+    return record
+
+
+def _build_pr_body(
+    fix_id: str,
+    traceback_info: dict,
+    llm_result: dict,
+    test_result: dict,
+) -> str:
+    body_parts = [
+        f"## Agent Auto-Fix: {fix_id}",
+        "",
+        f"**Error Type**: `{traceback_info['error_type']}`",
+        f"**Error Message**: {traceback_info['error_message']}",
+        "",
+        "### Root Cause Analysis",
+        llm_result.get("root_cause", "N/A"),
+        "",
+        "### Fix Explanation",
+        llm_result.get("explanation", "N/A"),
+        "",
+        "### Changed Files",
+    ]
+    for f in llm_result.get("changed_files", []):
+        body_parts.append(f"- `{f}`")
+
+    body_parts.extend([
+        "",
+        "### Test Evidence",
+        "```",
+        test_result.get("stdout", "N/A"),
+        "```",
+        "",
+        "---",
+        "*This PR was automatically generated by the Agent Auto-Debug System.*",
+        "*Please review before merging.*",
+    ])
+    return "\n".join(body_parts)
