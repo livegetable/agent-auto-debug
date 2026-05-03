@@ -1,8 +1,10 @@
 import json
 import re
 from pathlib import Path
+
 from openai import OpenAI
-from agent.config import OPENAI_API_KEY, OPENAI_MODEL, OPENAI_BASE_URL, PROJECT_ROOT
+
+from agent.config import OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_MODEL
 
 PROMPT_PATH = Path(__file__).resolve().parent / "prompts" / "repair_prompt.md"
 
@@ -10,7 +12,7 @@ PROMPT_PATH = Path(__file__).resolve().parent / "prompts" / "repair_prompt.md"
 def load_system_prompt() -> str:
     if PROMPT_PATH.is_file():
         return PROMPT_PATH.read_text(encoding="utf-8")
-    return "You are a bug repair agent. Analyze the error and generate a fix."
+    return "你是一个缺陷修复助手，请分析错误并生成修复补丁。"
 
 
 def analyze_and_fix(
@@ -43,9 +45,10 @@ def analyze_and_fix(
 `{test_command}`
 
 ## Constraints
-{constraints if constraints else 'No additional constraints.'}
+{constraints if constraints else "No additional constraints."}
 
-Please analyze the root cause and generate a unified diff patch to fix the bug."""
+请分析根因并生成 unified diff 补丁。
+注意：`root_cause` 与 `explanation` 必须使用中文，且只输出一个 JSON 对象。"""
 
     messages = [
         {"role": "system", "content": system_prompt},
@@ -54,41 +57,63 @@ Please analyze the root cause and generate a unified diff patch to fix the bug."
 
     for attempt in range(max_retries + 1):
         try:
-            response = client.chat.completions.create(
-                model=OPENAI_MODEL,
-                messages=messages,
-                temperature=0.1,
-                response_format={"type": "json_object"},
-            )
-            content = response.choices[0].message.content
+            content = _request_llm_content(client, messages)
             result = _parse_response(content)
             if result:
                 return result
-        except Exception as e:
+
             if attempt < max_retries:
-                messages.append({"role": "assistant", "content": str(e)})
-                messages.append({
-                    "role": "user",
-                    "content": "The previous response was invalid. Please try again with valid JSON output.",
-                })
+                messages.append({"role": "assistant", "content": (content or "")[:4000]})
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "你上一次输出不是可解析 JSON。"
+                            "请只输出一个 JSON 对象，并确保包含 root_cause、patch、changed_files。"
+                        ),
+                    }
+                )
                 continue
+
             return {
-                "root_cause": f"LLM call failed: {str(e)}",
+                "root_cause": "LLM 返回内容无法解析为期望 JSON",
                 "error_type": "Unknown",
                 "patch": "",
                 "changed_files": [],
                 "confidence": 0.0,
-                "explanation": f"Failed after {max_retries + 1} attempts",
+                "explanation": f"原始返回（截断）: {(content or '')[:300]}",
+            }
+        except Exception as error:
+            if attempt < max_retries:
+                messages.append({"role": "assistant", "content": str(error)})
+                messages.append({"role": "user", "content": "上一轮调用失败，请重试并严格输出 JSON。"})
+                continue
+            return {
+                "root_cause": f"LLM 调用失败: {error}",
+                "error_type": "Unknown",
+                "patch": "",
+                "changed_files": [],
+                "confidence": 0.0,
+                "explanation": f"重试 {max_retries + 1} 次后失败",
             }
 
     return {
-        "root_cause": "Failed to get valid response from LLM",
+        "root_cause": "未获取到有效 LLM 响应",
         "error_type": "Unknown",
         "patch": "",
         "changed_files": [],
         "confidence": 0.0,
-        "explanation": "No valid response",
+        "explanation": "无有效响应",
     }
+
+
+def _request_llm_content(client: OpenAI, messages: list[dict]) -> str:
+    response = client.chat.completions.create(
+        model=OPENAI_MODEL,
+        messages=messages,
+        temperature=0.1,
+    )
+    return response.choices[0].message.content or ""
 
 
 def _parse_response(content: str) -> dict | None:
@@ -98,7 +123,7 @@ def _parse_response(content: str) -> dict | None:
         return _try_extract_json(content)
 
     required = ["root_cause", "patch", "changed_files"]
-    if not all(k in data for k in required):
+    if not all(key in data for key in required):
         return None
 
     return {
@@ -113,9 +138,9 @@ def _parse_response(content: str) -> dict | None:
 
 def _try_extract_json(content: str) -> dict | None:
     json_match = re.search(r"\{[\s\S]*\}", content)
-    if json_match:
-        try:
-            return _parse_response(json_match.group())
-        except Exception:
-            pass
-    return None
+    if not json_match:
+        return None
+    try:
+        return _parse_response(json_match.group())
+    except Exception:
+        return None
