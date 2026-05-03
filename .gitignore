@@ -205,3 +205,6 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Work summary private cache
+skills/work-summary-writer/references/last-summary.md
