@@ -2,7 +2,7 @@ import json
 import re
 from pathlib import Path
 from openai import OpenAI
-from agent.config import OPENAI_API_KEY, OPENAI_MODEL, PROJECT_ROOT
+from agent.config import OPENAI_API_KEY, OPENAI_MODEL, OPENAI_BASE_URL, PROJECT_ROOT
 
 PROMPT_PATH = Path(__file__).resolve().parent / "prompts" / "repair_prompt.md"
 
@@ -20,7 +20,10 @@ def analyze_and_fix(
     constraints: str = "",
     max_retries: int = 2,
 ) -> dict:
-    client = OpenAI(api_key=OPENAI_API_KEY)
+    client_kwargs = {"api_key": OPENAI_API_KEY}
+    if OPENAI_BASE_URL:
+        client_kwargs["base_url"] = OPENAI_BASE_URL
+    client = OpenAI(**client_kwargs)
     system_prompt = load_system_prompt()
 
     code_sections = []

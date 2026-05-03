@@ -16,6 +16,14 @@ def run_once(log_path: str | None = None) -> dict:
 
 def run_watch(log_path: str | None = None, poll_interval: int = 10) -> None:
     print(f"[Agent] Running in watch mode (polling every {poll_interval}s)...")
+
+    existing_log = read_log(log_path)
+    if existing_log["success"] and existing_log["content"].strip():
+        if "Traceback" in existing_log["content"] and ("Error" in existing_log["content"] or "Exception" in existing_log["content"]):
+            print("[Agent] Found existing traceback in log, processing...")
+            result = run_fix_workflow(log_path)
+            _print_result(result)
+
     last_position = get_log_size(log_path)
 
     while True:

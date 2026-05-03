@@ -1,0 +1,1 @@
+{"id": "fix-20260502-001", "source": "traceback_log", "error_type": "ValueError", "root_cause": "Auto-fix failed after multiple attempts", "changed_files": [], "test_result": "failed", "branch": "", "pr_url": "", "feishu_notified": false, "status": "failed", "time": "2026-05-02T06:08:42.726824+08:00"}
