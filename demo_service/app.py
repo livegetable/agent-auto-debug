@@ -46,10 +46,8 @@ def calculate():
         b = float(payload.get("b", 0))
     except (TypeError, ValueError):
         return jsonify({"error": "a and b must be numbers"}), 400
-
     if b == 0:
         return jsonify({"error": "division by zero"}), 400
-
     result = "Result: " + str(a / b)
     return jsonify({"result": result})
 
