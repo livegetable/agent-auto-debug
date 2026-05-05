@@ -148,6 +148,25 @@ def _preview_text(text: str, max_lines: int = 30) -> str:
     return "\n".join(preview_lines)
 
 
+def _pick_isolated_branch_name(base_branch_name: str, max_suffix: int = 99) -> str:
+    """
+    选择可用的隔离分支名：
+    - 优先使用 base_branch_name
+    - 若已存在，则尝试 base_branch_name-1, -2, ...
+    """
+    candidates = [base_branch_name] + [f"{base_branch_name}-{index}" for index in range(1, max_suffix + 1)]
+    for candidate in candidates:
+        result = subprocess.run(
+            ["git", "show-ref", "--verify", "--quiet", f"refs/heads/{candidate}"],
+            capture_output=True,
+            text=True,
+            cwd=PROJECT_ROOT,
+        )
+        if result.returncode != 0:
+            return candidate
+    return f"{base_branch_name}-{max_suffix + 1}"
+
+
 def revert_changes() -> dict:
     try:
         subprocess.run(
@@ -166,157 +185,166 @@ def revert_changes() -> dict:
 def run_fix_workflow(log_path: str | None = None, max_attempts: int = 3) -> dict:
     fix_id = generate_fix_id()
     original_branch = get_current_branch()
+    branch_name = _pick_isolated_branch_name(f"{BRANCH_PREFIX}-{fix_id}")
+    created_isolated_branch = False
     print(f"[Agent] 开始修复流程: {fix_id}")
 
-    log_result = read_log(log_path)
-    if not log_result["success"]:
-        record = _build_record(fix_id, "traceback_log", "Unknown", "", [], "failed",
-                               error="Failed to read log file")
-        save_record(record)
-        return record
-
-    print("[Agent] 步骤1：读取并解析 traceback...")
-    traceback_info = extract_traceback_info(log_result["content"])
-    if traceback_info["error_type"] == "Unknown":
-        record = _build_record(fix_id, "traceback_log", "Unknown", "", [], "failed",
-                               error="Could not parse traceback from log")
-        save_record(record)
-        return record
-
-    print(f"[Agent] 识别到错误: {traceback_info['error_type']}: {traceback_info['error_message']}")
-
-    print("[Agent] 步骤2：收集代码上下文...")
-    code_context = gather_code_context(traceback_info)
-    print(f"[Agent] 已加载上下文文件数: {len(code_context)}")
-
-    for attempt in range(1, max_attempts + 1):
-        print(f"[Agent] 步骤3：分析根因并生成补丁（第 {attempt}/{max_attempts} 次）...")
-        llm_result = analyze_and_fix(
-            traceback_text=traceback_info["traceback"],
-            code_context=code_context,
-            test_command=TEST_COMMAND,
-        )
-
-        if not llm_result.get("patch"):
-            print("[Agent] LLM 未生成补丁")
-            if llm_result.get("root_cause"):
-                print(f"[Agent] 原因: {llm_result['root_cause']}")
-            if llm_result.get("explanation"):
-                print(f"[Agent] 说明: {llm_result['explanation']}")
-            continue
-
-        if len(llm_result.get("changed_files", [])) > MAX_CHANGED_FILES:
-            print(f"[Agent] 补丁修改文件过多（{len(llm_result['changed_files'])}），跳过")
-            continue
-
-        print(f"[Agent] 根因分析: {llm_result['root_cause']}")
-        print(f"[Agent] 置信度: {llm_result.get('confidence', 0)}")
-
-        print("[Agent] 步骤4：应用补丁...")
-        apply_result = apply_patch(llm_result["patch"])
-        if not apply_result["success"]:
-            print(f"[Agent] 补丁应用失败: {apply_result['error']}")
-            revert_changes()
-            continue
-
-        print("[Agent] 步骤5：执行测试...")
-        test_result = run_test()
-        if not test_result["success"]:
-            print(f"[Agent] 补丁后测试失败（第 {attempt} 次）")
-            print(f"[Agent] 测试输出:\n{test_result['stdout']}\n{test_result['stderr']}")
-            revert_changes()
-            code_context_updated = {}
-            for fpath in llm_result.get("changed_files", []):
-                r = read_file(fpath)
-                if r["success"]:
-                    code_context_updated[fpath] = r["content"]
-            code_context.update(code_context_updated)
-            continue
-
-        print("[Agent] 测试通过，继续执行 Git 流程...")
-
-        print("[Agent] 步骤6：创建分支并提交...")
-        branch_name = f"{BRANCH_PREFIX}-{fix_id}"
+    try:
+        print(f"[Agent] 创建隔离分支: {branch_name}")
         branch_result = create_branch(branch_name)
         if not branch_result["success"]:
-            print(f"[Agent] 创建分支失败: {branch_result['error']}")
-            revert_changes()
             record = _build_record(
-                fix_id, "traceback_log", traceback_info["error_type"],
-                llm_result["root_cause"], llm_result.get("changed_files", []),
-                "failed", error=f"Branch creation failed: {branch_result['error']}",
+                fix_id, "traceback_log", "Unknown", "", [], "failed",
+                error=f"Branch creation failed: {branch_result['error']}",
             )
             save_record(record)
             return record
+        created_isolated_branch = True
 
-        commit_msg = f"fix({fix_id}): {llm_result['root_cause'][:80]}"
-        commit_result = commit_changes(commit_msg)
-        if not commit_result["success"]:
-            print(f"[Agent] 提交失败: {commit_result['error']}")
-            record = _build_record(
-                fix_id, "traceback_log", traceback_info["error_type"],
-                llm_result["root_cause"], llm_result.get("changed_files", []),
-                "failed", error=f"Commit failed: {commit_result['error']}",
-                branch=branch_name,
-            )
+        log_result = read_log(log_path)
+        if not log_result["success"]:
+            record = _build_record(fix_id, "traceback_log", "Unknown", "", [], "failed",
+                                   error="Failed to read log file")
             save_record(record)
             return record
 
-        print("[Agent] 步骤7：推送并创建 PR...")
-        push_result = push_branch(branch_name)
-        pr_url = ""
-        if push_result["success"]:
-            pr_body = _build_pr_body(fix_id, traceback_info, llm_result, test_result)
-            pr_result = create_pr(
-                title=f"[Agent Fix] {fix_id}: {traceback_info['error_type']}",
-                body=pr_body,
-                head=branch_name,
+        print("[Agent] 步骤1：读取并解析 traceback...")
+        traceback_info = extract_traceback_info(log_result["content"])
+        if traceback_info["error_type"] == "Unknown":
+            record = _build_record(fix_id, "traceback_log", "Unknown", "", [], "failed",
+                                   error="Could not parse traceback from log")
+            save_record(record)
+            return record
+
+        print(f"[Agent] 识别到错误: {traceback_info['error_type']}: {traceback_info['error_message']}")
+
+        print("[Agent] 步骤2：收集代码上下文...")
+        code_context = gather_code_context(traceback_info)
+        print(f"[Agent] 已加载上下文文件数: {len(code_context)}")
+
+        for attempt in range(1, max_attempts + 1):
+            print(f"[Agent] 步骤3：分析根因并生成补丁（第 {attempt}/{max_attempts} 次）...")
+            llm_result = analyze_and_fix(
+                traceback_text=traceback_info["traceback"],
+                code_context=code_context,
+                test_command=TEST_COMMAND,
             )
-            if pr_result["success"]:
-                pr_url = pr_result["pr_url"]
-                print(f"[Agent] PR 已创建: {pr_url}")
+
+            if not llm_result.get("patch"):
+                print("[Agent] LLM 未生成补丁")
+                if llm_result.get("root_cause"):
+                    print(f"[Agent] 原因: {llm_result['root_cause']}")
+                if llm_result.get("explanation"):
+                    print(f"[Agent] 说明: {llm_result['explanation']}")
+                continue
+
+            if len(llm_result.get("changed_files", [])) > MAX_CHANGED_FILES:
+                print(f"[Agent] 补丁修改文件过多（{len(llm_result['changed_files'])}），跳过")
+                continue
+
+            print(f"[Agent] 根因分析: {llm_result['root_cause']}")
+            print(f"[Agent] 置信度: {llm_result.get('confidence', 0)}")
+
+            print("[Agent] 步骤4：应用补丁...")
+            apply_result = apply_patch(llm_result["patch"])
+            if not apply_result["success"]:
+                print(f"[Agent] 补丁应用失败: {apply_result['error']}")
+                revert_changes()
+                continue
+
+            print("[Agent] 步骤5：执行测试...")
+            test_result = run_test()
+            if not test_result["success"]:
+                print(f"[Agent] 补丁后测试失败（第 {attempt} 次）")
+                print(f"[Agent] 测试输出:\n{test_result['stdout']}\n{test_result['stderr']}")
+                revert_changes()
+                code_context_updated = {}
+                for fpath in llm_result.get("changed_files", []):
+                    r = read_file(fpath)
+                    if r["success"]:
+                        code_context_updated[fpath] = r["content"]
+                code_context.update(code_context_updated)
+                continue
+
+            print("[Agent] 测试通过，继续执行 Git 流程...")
+
+            print("[Agent] 步骤6：提交代码...")
+            commit_msg = f"fix({fix_id}): {llm_result['root_cause'][:80]}"
+            commit_result = commit_changes(commit_msg)
+            if not commit_result["success"]:
+                print(f"[Agent] 提交失败: {commit_result['error']}")
+                record = _build_record(
+                    fix_id, "traceback_log", traceback_info["error_type"],
+                    llm_result["root_cause"], llm_result.get("changed_files", []),
+                    "failed", error=f"Commit failed: {commit_result['error']}",
+                    branch=branch_name,
+                )
+                save_record(record)
+                return record
+
+            print("[Agent] 步骤7：推送并创建 PR...")
+            push_result = push_branch(branch_name)
+            pr_url = ""
+            if push_result["success"]:
+                pr_body = _build_pr_body(fix_id, traceback_info, llm_result, test_result)
+                pr_result = create_pr(
+                    title=f"[Agent Fix] {fix_id}: {traceback_info['error_type']}",
+                    body=pr_body,
+                    head=branch_name,
+                )
+                if pr_result["success"]:
+                    pr_url = pr_result["pr_url"]
+                    print(f"[Agent] PR 已创建: {pr_url}")
+                else:
+                    print(f"[Agent] 创建 PR 失败: {pr_result['error']}")
             else:
-                print(f"[Agent] 创建 PR 失败: {pr_result['error']}")
-        else:
-            print(f"[Agent] 推送失败: {push_result['error']}")
+                print(f"[Agent] 推送失败: {push_result['error']}")
 
-        print("[Agent] 步骤8：发送飞书通知...")
-        feishu_result = send_success_card(
+            print("[Agent] 步骤8：发送飞书通知...")
+            feishu_result = send_success_card(
+                fix_id=fix_id,
+                error_type=traceback_info["error_type"],
+                root_cause=llm_result["root_cause"],
+                branch=branch_name,
+                pr_url=pr_url,
+                changed_files=llm_result.get("changed_files", []),
+            )
+            feishu_notified = feishu_result.get("success", False)
+
+            record = _build_record(
+                fix_id, "traceback_log", traceback_info["error_type"],
+                llm_result["root_cause"], llm_result.get("changed_files", []),
+                "success", branch=branch_name, pr_url=pr_url,
+                feishu_notified=feishu_notified,
+            )
+            save_record(record)
+            print(f"[Agent] 修复流程已完成: {fix_id}")
+            return record
+
+        print(f"[Agent] 已重试 {max_attempts} 次，全部失败")
+
+        feishu_result = send_failure_card(
             fix_id=fix_id,
             error_type=traceback_info["error_type"],
-            root_cause=llm_result["root_cause"],
-            branch=branch_name,
-            pr_url=pr_url,
-            changed_files=llm_result.get("changed_files", []),
+            root_cause="Auto-fix failed after multiple attempts",
+            reason="Could not generate a patch that passes all tests",
         )
-        feishu_notified = feishu_result.get("success", False)
 
         record = _build_record(
             fix_id, "traceback_log", traceback_info["error_type"],
-            llm_result["root_cause"], llm_result.get("changed_files", []),
-            "success", branch=branch_name, pr_url=pr_url,
-            feishu_notified=feishu_notified,
+            "Auto-fix failed after multiple attempts", [], "failed",
+            feishu_notified=feishu_result.get("success", False),
+            branch=branch_name if created_isolated_branch else "",
         )
         save_record(record)
-        print(f"[Agent] 修复流程已完成: {fix_id}")
         return record
-
-    print(f"[Agent] 已重试 {max_attempts} 次，全部失败")
-
-    feishu_result = send_failure_card(
-        fix_id=fix_id,
-        error_type=traceback_info["error_type"],
-        root_cause="Auto-fix failed after multiple attempts",
-        reason="Could not generate a patch that passes all tests",
-    )
-
-    record = _build_record(
-        fix_id, "traceback_log", traceback_info["error_type"],
-        "Auto-fix failed after multiple attempts", [], "failed",
-        feishu_notified=feishu_result.get("success", False),
-    )
-    save_record(record)
-    return record
+    finally:
+        if created_isolated_branch:
+            checkout_result = checkout_branch(original_branch)
+            if checkout_result["success"]:
+                print(f"[Agent] 已切回原分支: {original_branch}")
+            else:
+                print(f"[Agent] 切回原分支失败，请手动执行: git checkout {original_branch}")
 
 
 def _build_record(
