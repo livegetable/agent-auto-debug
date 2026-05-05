@@ -97,21 +97,61 @@ def apply_patch(patch_text: str) -> dict:
             ["git", "apply", "--check", "--recount", patch_file],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             cwd=PROJECT_ROOT,
         )
         if check_result.returncode != 0:
-            return {
-                "success": False,
-                "error": (
-                    f"Patch check failed: {check_result.stderr}\n\n"
-                    f"Patch preview:\n{_preview_text(normalized_patch)}"
-                ),
-            }
+            check_ignore_ws = subprocess.run(
+                [
+                    "git",
+                    "apply",
+                    "--check",
+                    "--recount",
+                    "--ignore-space-change",
+                    "--ignore-whitespace",
+                    patch_file,
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                cwd=PROJECT_ROOT,
+            )
+            if check_ignore_ws.returncode != 0:
+                return {
+                    "success": False,
+                    "error": (
+                        f"Patch check failed: {check_result.stderr}\n\n"
+                        f"Patch preview:\n{_preview_text(normalized_patch)}"
+                    ),
+                }
+
+            apply_ignore_ws = subprocess.run(
+                [
+                    "git",
+                    "apply",
+                    "--recount",
+                    "--ignore-space-change",
+                    "--ignore-whitespace",
+                    patch_file,
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                cwd=PROJECT_ROOT,
+            )
+            if apply_ignore_ws.returncode != 0:
+                return {"success": False, "error": f"Patch apply failed: {apply_ignore_ws.stderr}"}
+            return {"success": True}
 
         apply_result = subprocess.run(
             ["git", "apply", "--recount", patch_file],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             cwd=PROJECT_ROOT,
         )
         if apply_result.returncode != 0:

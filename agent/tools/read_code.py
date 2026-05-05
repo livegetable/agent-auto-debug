@@ -17,13 +17,9 @@ def read_file(file_path: str, start_line: int = 1, end_line: int | None = None) 
     end_idx = len(lines) if end_line is None else min(end_line, len(lines))
     selected = lines[start_idx:end_idx]
 
-    numbered = []
-    for i, line in enumerate(selected, start=start_line):
-        numbered.append(f"{i}: {line.rstrip()}")
-
     return {
         "success": True,
-        "content": "\n".join(numbered),
+        "content": "".join(selected),
         "file_path": str(abs_path),
         "total_lines": len(lines),
     }

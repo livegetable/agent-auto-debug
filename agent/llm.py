@@ -12,7 +12,7 @@ PROMPT_PATH = Path(__file__).resolve().parent / "prompts" / "repair_prompt.md"
 def load_system_prompt() -> str:
     if PROMPT_PATH.is_file():
         return PROMPT_PATH.read_text(encoding="utf-8")
-    return "你是一个缺陷修复助手，请分析错误并生成修复补丁。"
+    return "你是一个缺陷修复助手，请分析错误并生成可应用的补丁。"
 
 
 def analyze_and_fix(
@@ -28,7 +28,7 @@ def analyze_and_fix(
     client = OpenAI(**client_kwargs)
     system_prompt = load_system_prompt()
 
-    code_sections = []
+    code_sections: list[str] = []
     for file_path, content in code_context.items():
         code_sections.append(f"### File: {file_path}\n```\n{content}\n```")
     code_block = "\n\n".join(code_sections)
@@ -47,8 +47,12 @@ def analyze_and_fix(
 ## Constraints
 {constraints if constraints else "No additional constraints."}
 
-请分析根因并生成 unified diff 补丁。
-注意：`root_cause` 与 `explanation` 必须使用中文，且只输出一个 JSON 对象。"""
+请分析根因并生成 unified diff 补丁（`git apply` 可用）。注意：
+- `Code Context` 中的代码块是“原始源码”，不要把行号当作代码内容。
+- diff 文件路径请使用仓库相对路径（例如 `demo_service/app.py`）。
+- `root_cause` 与 `explanation` 使用中文。
+- 只输出一个 JSON 对象，且必须包含 `root_cause`、`patch`、`changed_files`。
+"""
 
     messages = [
         {"role": "system", "content": system_prompt},
@@ -67,16 +71,13 @@ def analyze_and_fix(
                 messages.append(
                     {
                         "role": "user",
-                        "content": (
-                            "你上一次输出不是可解析 JSON。"
-                            "请只输出一个 JSON 对象，并确保包含 root_cause、patch、changed_files。"
-                        ),
+                        "content": "你上一次输出不是可解析 JSON。请只输出一个 JSON 对象，并确保包含 root_cause、patch、changed_files。",
                     }
                 )
                 continue
 
             return {
-                "root_cause": "LLM 返回内容无法解析为期望 JSON",
+                "root_cause": "LLM 返回内容无法解析为期望的 JSON",
                 "error_type": "Unknown",
                 "patch": "",
                 "changed_files": [],
