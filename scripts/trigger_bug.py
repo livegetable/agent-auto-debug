@@ -1,5 +1,5 @@
-import sys
 import os
+import sys
 import requests
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -7,93 +7,91 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 BASE_URL = os.environ.get("SERVICE_URL", "http://localhost:5000")
 
 BUG_SCENARIOS = {
-    "1": {
-        "name": "KeyError - missing user_id",
-        "method": "GET",
-        "url": f"{BASE_URL}/api/user",
-        "json": {},
-        "expected_error": "KeyError",
-    },
-    "2": {
-        "name": "TypeError - string/int concatenation",
+    "value_error": {
+        "name": "ValueError in /api/calculate (a='abc')",
         "method": "POST",
         "url": f"{BASE_URL}/api/calculate",
-        "json": {"a": 10, "b": 2},
-        "expected_error": "TypeError",
+        "json": {"a": "abc", "b": 2},
+        "expected_status": 500,
+        "expected_error": "ValueError",
     },
-    "3": {
-        "name": "ZeroDivisionError - division by zero",
+    "zero_division": {
+        "name": "ZeroDivisionError in /api/calculate (b=0)",
         "method": "POST",
         "url": f"{BASE_URL}/api/calculate",
         "json": {"a": 10, "b": 0},
+        "expected_status": 500,
         "expected_error": "ZeroDivisionError",
     },
-    "4": {
-        "name": "TypeError - NoneType subtraction",
-        "method": "POST",
-        "url": f"{BASE_URL}/api/discount",
-        "json": {"discount": 20},
-        "expected_error": "TypeError",
-    },
-    "5": {
-        "name": "AttributeError - NoneType has no upper",
+    "attribute_error": {
+        "name": "AttributeError in /api/greet (name=None)",
         "method": "GET",
         "url": f"{BASE_URL}/api/greet",
         "json": {},
+        "expected_status": 500,
         "expected_error": "AttributeError",
     },
 }
 
 
-def trigger_bug(scenario_key: str) -> dict:
-    scenario = BUG_SCENARIOS.get(scenario_key)
+def trigger_bug(bug_key: str) -> dict:
+    scenario = BUG_SCENARIOS.get(bug_key)
     if not scenario:
-        print(f"Unknown scenario: {scenario_key}")
-        print(f"Available scenarios: {', '.join(BUG_SCENARIOS.keys())}")
-        return {"success": False, "error": "Unknown scenario"}
+        print(f"Unknown bug key: {bug_key}")
+        print(f"Available bug keys: {', '.join(BUG_SCENARIOS.keys())}")
+        return {"success": False, "error": "Unknown bug key"}
 
-    print(f"Triggering bug scenario {scenario_key}: {scenario['name']}")
+    print(f"Trigger bug scenario: {scenario['name']}")
     try:
         if scenario["method"] == "GET":
-            resp = requests.get(scenario["url"], json=scenario["json"], timeout=5)
+            response = requests.get(scenario["url"], json=scenario["json"], timeout=5)
         else:
-            resp = requests.post(scenario["url"], json=scenario["json"], timeout=5)
-        print(f"Response status: {resp.status_code}")
-        print(f"Response body: {resp.text[:500]}")
-        return {"success": True, "status_code": resp.status_code}
+            response = requests.post(scenario["url"], json=scenario["json"], timeout=5)
+
+        print(f"Response status: {response.status_code}")
+        print(f"Response body: {response.text[:500]}")
+        print(f"Expected status: {scenario['expected_status']} ({scenario['expected_error']})")
+        if response.status_code != scenario["expected_status"]:
+            print("Warning: status does not match expectation. Restart service to load latest app.py.")
+        return {"success": True, "status_code": response.status_code}
     except requests.exceptions.ConnectionError:
-        print("Error: Could not connect to service. Is it running?")
+        print("Error: could not connect to service. Is demo_service running?")
         return {"success": False, "error": "Connection refused"}
-    except Exception as e:
-        print(f"Error: {e}")
-        return {"success": False, "error": str(e)}
+    except Exception as error:
+        print(f"Error: {error}")
+        return {"success": False, "error": str(error)}
 
 
 def trigger_all_bugs():
-    print("Triggering all bug scenarios...\n")
+    print("Trigger all bug scenarios...\n")
     for key in BUG_SCENARIOS:
         trigger_bug(key)
         print()
-    print("All bug scenarios triggered. Check the log file for tracebacks.")
+    print("Done. Check demo_service/logs/error.log for tracebacks.")
 
 
 def main():
     if len(sys.argv) > 1:
-        scenario_key = sys.argv[1]
-        if scenario_key == "all":
+        bug_key = sys.argv[1]
+        if bug_key == "all":
             trigger_all_bugs()
         else:
-            trigger_bug(scenario_key)
-    else:
-        print("Bug Trigger Script")
-        print("=" * 40)
-        print("Available scenarios:")
-        for key, scenario in BUG_SCENARIOS.items():
-            print(f"  {key}: {scenario['name']}")
-        print()
-        print("Usage:")
-        print(f"  python {sys.argv[0]} <scenario_number>")
-        print(f"  python {sys.argv[0]} all")
+            trigger_bug(bug_key)
+        return
+
+    print("Bug trigger script")
+    print("=" * 40)
+    print("Available bug keys:")
+    for key, scenario in BUG_SCENARIOS.items():
+        print(f"  {key}: {scenario['name']}")
+    print()
+    print("Usage:")
+    print(f"  python {sys.argv[0]} <bug_key>")
+    print(f"  python {sys.argv[0]} all")
+    print()
+    print("Tip:")
+    print("  Run reset_bug.ps1 before triggering, to switch app.py to matching bug base.")
+    print("  Example: powershell -ExecutionPolicy Bypass -File scripts/reset_bug.ps1 -Bug value_error")
 
 
 if __name__ == "__main__":

@@ -41,11 +41,9 @@ def get_user():
 @app.route("/api/calculate", methods=["POST"])
 def calculate():
     payload = request.get_json(silent=True) or {}
-    try:
-        a = float(payload.get("a", 0))
-        b = float(payload.get("b", 0))
-    except (ValueError, TypeError):
-        return jsonify({"error": "invalid number input"}), 400
+    # BUG: 故意不捕获 ValueError/TypeError，用于演示自动修复
+    a = float(payload.get("a", 0))
+    b = float(payload.get("b", 0))
     if b == 0:
         return jsonify({"error": "division by zero"}), 400
     result = "Result: " + str(a / b)

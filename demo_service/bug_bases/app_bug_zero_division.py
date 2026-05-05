@@ -46,8 +46,7 @@ def calculate():
         b = float(payload.get("b", 0))
     except (ValueError, TypeError):
         return jsonify({"error": "invalid number input"}), 400
-    if b == 0:
-        return jsonify({"error": "division by zero"}), 400
+    # BUG: 故意去掉 b == 0 判断，触发 ZeroDivisionError
     result = "Result: " + str(a / b)
     return jsonify({"result": result})
 

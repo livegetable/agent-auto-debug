@@ -65,7 +65,8 @@ def apply_discount():
 def greet():
     payload = request.get_json(silent=True) or {}
     name = payload.get("name")
-    greeting = (name or "").upper()
+    # BUG: 故意不处理 name 为 None，触发 AttributeError
+    greeting = name.upper()
     return jsonify({"greeting": greeting})
 
 

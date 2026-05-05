@@ -85,3 +85,14 @@ def checkout_branch(branch_name: str) -> dict:
         return {"success": True, "branch": branch_name}
     except subprocess.CalledProcessError as e:
         return {"success": False, "error": e.stderr}
+
+
+def delete_branch(branch_name: str) -> dict:
+    try:
+        subprocess.run(
+            ["git", "branch", "-D", branch_name],
+            capture_output=True, text=True, check=True, cwd=PROJECT_ROOT,
+        )
+        return {"success": True, "branch": branch_name}
+    except subprocess.CalledProcessError as e:
+        return {"success": False, "error": e.stderr}

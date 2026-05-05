@@ -1,17 +1,23 @@
-import re
 import os
+import re
 import subprocess
-from agent.tools.read_log import read_log
-from agent.tools.read_code import read_file, search_code
-from agent.tools.run_test import run_test
-from agent.tools.git_ops import (
-    create_branch, commit_changes, push_branch, create_pr,
-    get_current_branch, checkout_branch,
-)
-from agent.tools.notify_feishu import send_success_card, send_failure_card
+
+from agent.config import BRANCH_PREFIX, MAX_CHANGED_FILES, PROJECT_ROOT, TEST_COMMAND
 from agent.llm import analyze_and_fix
-from agent.records.store import save_record, generate_fix_id
-from agent.config import PROJECT_ROOT, TEST_COMMAND, MAX_CHANGED_FILES, BRANCH_PREFIX
+from agent.records.store import generate_fix_id, save_record
+from agent.tools.git_ops import (
+    checkout_branch,
+    commit_changes,
+    create_branch,
+    create_pr,
+    delete_branch,
+    get_current_branch,
+    push_branch,
+)
+from agent.tools.notify_feishu import send_failure_card, send_success_card
+from agent.tools.read_code import read_file, search_code
+from agent.tools.read_log import read_log
+from agent.tools.run_test import run_test
 
 
 def extract_traceback_info(log_content: str) -> dict:
@@ -26,11 +32,7 @@ def extract_traceback_info(log_content: str) -> dict:
     error_type = tb_match.group(1)
     error_message = tb_match.group(2)
 
-    file_matches = re.findall(
-        r'File "(.+?)", line (\d+)',
-        full_traceback,
-    )
-
+    file_matches = re.findall(r'File "(.+?)", line (\d+)', full_traceback)
     files = []
     for fpath, lineno in file_matches:
         rel = os.path.relpath(fpath, PROJECT_ROOT).replace("\\", "/")
@@ -45,7 +47,7 @@ def extract_traceback_info(log_content: str) -> dict:
 
 
 def gather_code_context(traceback_info: dict) -> dict[str, str]:
-    code_context = {}
+    code_context: dict[str, str] = {}
     seen = set()
 
     for file_info in traceback_info.get("files", []):
@@ -69,17 +71,15 @@ def gather_code_context(traceback_info: dict) -> dict[str, str]:
 
 
 def _find_test_file(source_path: str) -> str | None:
-    parts = source_path.replace("\\", "/").split("/")
-    filename = parts[-1]
+    filename = source_path.replace("\\", "/").split("/")[-1]
     name_without_ext = os.path.splitext(filename)[0]
     test_filename = f"test_{name_without_ext}.py"
 
     search_result = search_code(test_filename.replace(".py", ""), file_glob="test_*.py")
     if search_result["success"] and search_result["results"]:
-        for r in search_result["results"]:
-            if r["file"].endswith(test_filename):
-                return r["file"]
-
+        for item in search_result["results"]:
+            if item["file"].endswith(test_filename):
+                return item["file"]
     return None
 
 
@@ -90,32 +90,36 @@ def apply_patch(patch_text: str) -> dict:
 
     patch_file = os.path.join(PROJECT_ROOT, "_agent_patch.diff")
     try:
-        with open(patch_file, "w", encoding="utf-8") as f:
-            f.write(normalized_patch)
+        with open(patch_file, "w", encoding="utf-8") as file:
+            file.write(normalized_patch)
 
-        result = subprocess.run(
-            ["git", "apply", "--check", patch_file],
-            capture_output=True, text=True, cwd=PROJECT_ROOT,
+        check_result = subprocess.run(
+            ["git", "apply", "--check", "--recount", patch_file],
+            capture_output=True,
+            text=True,
+            cwd=PROJECT_ROOT,
         )
-        if result.returncode != 0:
+        if check_result.returncode != 0:
             return {
                 "success": False,
                 "error": (
-                    f"Patch check failed: {result.stderr}\n\n"
+                    f"Patch check failed: {check_result.stderr}\n\n"
                     f"Patch preview:\n{_preview_text(normalized_patch)}"
                 ),
             }
 
-        result = subprocess.run(
-            ["git", "apply", patch_file],
-            capture_output=True, text=True, cwd=PROJECT_ROOT,
+        apply_result = subprocess.run(
+            ["git", "apply", "--recount", patch_file],
+            capture_output=True,
+            text=True,
+            cwd=PROJECT_ROOT,
         )
-        if result.returncode != 0:
-            return {"success": False, "error": f"Patch apply failed: {result.stderr}"}
+        if apply_result.returncode != 0:
+            return {"success": False, "error": f"Patch apply failed: {apply_result.stderr}"}
 
         return {"success": True}
-    except Exception as e:
-        return {"success": False, "error": str(e)}
+    except Exception as error:
+        return {"success": False, "error": str(error)}
     finally:
         if os.path.isfile(patch_file):
             os.remove(patch_file)
@@ -144,16 +148,11 @@ def _preview_text(text: str, max_lines: int = 30) -> str:
     lines = text.splitlines()
     preview_lines = lines[:max_lines]
     if len(lines) > max_lines:
-        preview_lines.append("...<截断>")
+        preview_lines.append("...<truncated>")
     return "\n".join(preview_lines)
 
 
 def _pick_isolated_branch_name(base_branch_name: str, max_suffix: int = 99) -> str:
-    """
-    选择可用的隔离分支名：
-    - 优先使用 base_branch_name
-    - 若已存在，则尝试 base_branch_name-1, -2, ...
-    """
     candidates = [base_branch_name] + [f"{base_branch_name}-{index}" for index in range(1, max_suffix + 1)]
     for candidate in candidates:
         result = subprocess.run(
@@ -167,19 +166,21 @@ def _pick_isolated_branch_name(base_branch_name: str, max_suffix: int = 99) -> s
     return f"{base_branch_name}-{max_suffix + 1}"
 
 
-def revert_changes() -> dict:
+def revert_candidate_files(candidate_files: list[str]) -> dict:
+    targets = [item for item in dict.fromkeys(candidate_files) if item and os.path.isfile(os.path.join(PROJECT_ROOT, item))]
+    if not targets:
+        return {"success": True, "reverted_files": []}
     try:
         subprocess.run(
-            ["git", "checkout", "--", "."],
-            capture_output=True, text=True, cwd=PROJECT_ROOT,
+            ["git", "checkout", "--", *targets],
+            capture_output=True,
+            text=True,
+            check=True,
+            cwd=PROJECT_ROOT,
         )
-        subprocess.run(
-            ["git", "clean", "-fd"],
-            capture_output=True, text=True, cwd=PROJECT_ROOT,
-        )
-        return {"success": True}
-    except Exception as e:
-        return {"success": False, "error": str(e)}
+        return {"success": True, "reverted_files": targets}
+    except subprocess.CalledProcessError as error:
+        return {"success": False, "error": error.stderr, "reverted_files": []}
 
 
 def run_fix_workflow(log_path: str | None = None, max_attempts: int = 3) -> dict:
@@ -187,6 +188,9 @@ def run_fix_workflow(log_path: str | None = None, max_attempts: int = 3) -> dict
     original_branch = get_current_branch()
     branch_name = _pick_isolated_branch_name(f"{BRANCH_PREFIX}-{fix_id}")
     created_isolated_branch = False
+    should_delete_temp_branch = True
+    candidate_files_to_revert: list[str] = []
+
     print(f"[Agent] 开始修复流程: {fix_id}")
 
     try:
@@ -194,7 +198,12 @@ def run_fix_workflow(log_path: str | None = None, max_attempts: int = 3) -> dict
         branch_result = create_branch(branch_name)
         if not branch_result["success"]:
             record = _build_record(
-                fix_id, "traceback_log", "Unknown", "", [], "failed",
+                fix_id,
+                "traceback_log",
+                "Unknown",
+                "",
+                [],
+                "failed",
                 error=f"Branch creation failed: {branch_result['error']}",
             )
             save_record(record)
@@ -203,16 +212,14 @@ def run_fix_workflow(log_path: str | None = None, max_attempts: int = 3) -> dict
 
         log_result = read_log(log_path)
         if not log_result["success"]:
-            record = _build_record(fix_id, "traceback_log", "Unknown", "", [], "failed",
-                                   error="Failed to read log file")
+            record = _build_record(fix_id, "traceback_log", "Unknown", "", [], "failed", error="Failed to read log file")
             save_record(record)
             return record
 
         print("[Agent] 步骤1：读取并解析 traceback...")
         traceback_info = extract_traceback_info(log_result["content"])
         if traceback_info["error_type"] == "Unknown":
-            record = _build_record(fix_id, "traceback_log", "Unknown", "", [], "failed",
-                                   error="Could not parse traceback from log")
+            record = _build_record(fix_id, "traceback_log", "Unknown", "", [], "failed", error="Could not parse traceback from log")
             save_record(record)
             return record
 
@@ -238,9 +245,12 @@ def run_fix_workflow(log_path: str | None = None, max_attempts: int = 3) -> dict
                     print(f"[Agent] 说明: {llm_result['explanation']}")
                 continue
 
-            if len(llm_result.get("changed_files", [])) > MAX_CHANGED_FILES:
-                print(f"[Agent] 补丁修改文件过多（{len(llm_result['changed_files'])}），跳过")
+            changed_files = llm_result.get("changed_files", [])
+            if len(changed_files) > MAX_CHANGED_FILES:
+                print(f"[Agent] 补丁修改文件过多（{len(changed_files)}），跳过")
                 continue
+
+            candidate_files_to_revert = changed_files or [item["file"] for item in traceback_info.get("files", [])]
 
             print(f"[Agent] 根因分析: {llm_result['root_cause']}")
             print(f"[Agent] 置信度: {llm_result.get('confidence', 0)}")
@@ -249,7 +259,9 @@ def run_fix_workflow(log_path: str | None = None, max_attempts: int = 3) -> dict
             apply_result = apply_patch(llm_result["patch"])
             if not apply_result["success"]:
                 print(f"[Agent] 补丁应用失败: {apply_result['error']}")
-                revert_changes()
+                revert_result = revert_candidate_files(candidate_files_to_revert)
+                if not revert_result["success"]:
+                    print(f"[Agent] 候选文件回滚失败: {revert_result.get('error', 'unknown error')}")
                 continue
 
             print("[Agent] 步骤5：执行测试...")
@@ -257,12 +269,14 @@ def run_fix_workflow(log_path: str | None = None, max_attempts: int = 3) -> dict
             if not test_result["success"]:
                 print(f"[Agent] 补丁后测试失败（第 {attempt} 次）")
                 print(f"[Agent] 测试输出:\n{test_result['stdout']}\n{test_result['stderr']}")
-                revert_changes()
+                revert_result = revert_candidate_files(candidate_files_to_revert)
+                if not revert_result["success"]:
+                    print(f"[Agent] 候选文件回滚失败: {revert_result.get('error', 'unknown error')}")
                 code_context_updated = {}
-                for fpath in llm_result.get("changed_files", []):
-                    r = read_file(fpath)
-                    if r["success"]:
-                        code_context_updated[fpath] = r["content"]
+                for fpath in changed_files:
+                    result = read_file(fpath)
+                    if result["success"]:
+                        code_context_updated[fpath] = result["content"]
                 code_context.update(code_context_updated)
                 continue
 
@@ -274,9 +288,13 @@ def run_fix_workflow(log_path: str | None = None, max_attempts: int = 3) -> dict
             if not commit_result["success"]:
                 print(f"[Agent] 提交失败: {commit_result['error']}")
                 record = _build_record(
-                    fix_id, "traceback_log", traceback_info["error_type"],
-                    llm_result["root_cause"], llm_result.get("changed_files", []),
-                    "failed", error=f"Commit failed: {commit_result['error']}",
+                    fix_id,
+                    "traceback_log",
+                    traceback_info["error_type"],
+                    llm_result["root_cause"],
+                    changed_files,
+                    "failed",
+                    error=f"Commit failed: {commit_result['error']}",
                     branch=branch_name,
                 )
                 save_record(record)
@@ -307,17 +325,23 @@ def run_fix_workflow(log_path: str | None = None, max_attempts: int = 3) -> dict
                 root_cause=llm_result["root_cause"],
                 branch=branch_name,
                 pr_url=pr_url,
-                changed_files=llm_result.get("changed_files", []),
+                changed_files=changed_files,
             )
             feishu_notified = feishu_result.get("success", False)
 
             record = _build_record(
-                fix_id, "traceback_log", traceback_info["error_type"],
-                llm_result["root_cause"], llm_result.get("changed_files", []),
-                "success", branch=branch_name, pr_url=pr_url,
+                fix_id,
+                "traceback_log",
+                traceback_info["error_type"],
+                llm_result["root_cause"],
+                changed_files,
+                "success",
+                branch=branch_name,
+                pr_url=pr_url,
                 feishu_notified=feishu_notified,
             )
             save_record(record)
+            should_delete_temp_branch = False
             print(f"[Agent] 修复流程已完成: {fix_id}")
             return record
 
@@ -331,10 +355,14 @@ def run_fix_workflow(log_path: str | None = None, max_attempts: int = 3) -> dict
         )
 
         record = _build_record(
-            fix_id, "traceback_log", traceback_info["error_type"],
-            "Auto-fix failed after multiple attempts", [], "failed",
-            feishu_notified=feishu_result.get("success", False),
+            fix_id,
+            "traceback_log",
+            traceback_info["error_type"],
+            "Auto-fix failed after multiple attempts",
+            [],
+            "failed",
             branch=branch_name if created_isolated_branch else "",
+            feishu_notified=feishu_result.get("success", False),
         )
         save_record(record)
         return record
@@ -345,6 +373,13 @@ def run_fix_workflow(log_path: str | None = None, max_attempts: int = 3) -> dict
                 print(f"[Agent] 已切回原分支: {original_branch}")
             else:
                 print(f"[Agent] 切回原分支失败，请手动执行: git checkout {original_branch}")
+
+            if should_delete_temp_branch:
+                delete_result = delete_branch(branch_name)
+                if delete_result["success"]:
+                    print(f"[Agent] 已删除失败修复分支: {branch_name}")
+                else:
+                    print(f"[Agent] 删除失败修复分支失败，请手动执行: git branch -D {branch_name}")
 
 
 def _build_record(
@@ -396,18 +431,21 @@ def _build_pr_body(
         "",
         "### Changed Files",
     ]
-    for f in llm_result.get("changed_files", []):
-        body_parts.append(f"- `{f}`")
 
-    body_parts.extend([
-        "",
-        "### Test Evidence",
-        "```",
-        test_result.get("stdout", "N/A"),
-        "```",
-        "",
-        "---",
-        "*This PR was automatically generated by the Agent Auto-Debug System.*",
-        "*Please review before merging.*",
-    ])
+    for fpath in llm_result.get("changed_files", []):
+        body_parts.append(f"- `{fpath}`")
+
+    body_parts.extend(
+        [
+            "",
+            "### Test Evidence",
+            "```",
+            test_result.get("stdout", "N/A"),
+            "```",
+            "",
+            "---",
+            "*This PR was automatically generated by the Agent Auto-Debug System.*",
+            "*Please review before merging.*",
+        ]
+    )
     return "\n".join(body_parts)
