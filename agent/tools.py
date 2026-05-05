@@ -280,6 +280,15 @@ def write_fix_record(record: dict, record_id: str = "bug_001") -> str:
 {record.get('code_snippet', '')}
 ```
 
+## Git 提交信息
+{f"- 提交状态：✅ 成功" if record.get('git_result', {}).get('success') else f"- 提交状态：ℹ️ 已跳过 - {record.get('git_result', {}).get('reason', '未知原因')}"}
+{f"- 分支名称：{record.get('git_result', {}).get('branch', '未知')}" if record.get('git_result', {}).get('success') else ""}
+{f"- Commit Hash：{record.get('git_result', {}).get('commit_hash', '未知')}" if record.get('git_result', {}).get('success') else ""}
+
+## GitHub PR
+{f"- PR 状态：✅ 创建成功" if record.get('pr_result', {}).get('success') else f"- PR 状态：ℹ️ 已跳过 - {record.get('pr_result', {}).get('reason', '未知原因')}"}
+{f"- PR 链接：{record.get('pr_result', {}).get('pr_url', '')}" if record.get('pr_result', {}).get('success') else ""}
+
 ## 测试结果
 ```
 {record.get('test_output', '')}

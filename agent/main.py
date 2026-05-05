@@ -12,6 +12,9 @@ from .tools import (
 )
 from .prompts import FIX_PROMPT
 from .llm_client import call_llm_for_fix
+from .feishu_client import send_feishu_notification
+from .git_tool import run_git_commit_workflow
+from .pr_tool import run_pr_workflow
 
 
 def main():
@@ -137,6 +140,37 @@ def main():
     }
     record_path = write_fix_record(fix_record)
     print(f"✅ 修复记录已保存到: {record_path}")
+    
+    # 添加修复记录路径到通知信息
+    fix_record['record_path'] = record_path
+    
+    # Step 9: Git Commit
+    print("🔧 Step 9: 执行Git提交...")
+    git_result = run_git_commit_workflow(fix_record)
+    fix_record['git_result'] = git_result
+    
+    if git_result['success']:
+        print(f"✅ Git提交成功: 分支={git_result['branch']}, Commit={git_result['commit_hash']}")
+    elif git_result['skipped']:
+        print(f"ℹ️ Git提交已跳过: {git_result['reason']}")
+    else:
+        print(f"⚠️ Git提交失败: {git_result['reason']}")
+    
+    # Step 10: GitHub PR
+    print("🔗 Step 10: 创建GitHub PR...")
+    pr_result = run_pr_workflow(fix_record)
+    fix_record['pr_result'] = pr_result
+    
+    if pr_result['success']:
+        print(f"✅ PR创建成功: {pr_result['pr_url']}")
+    elif pr_result['skipped']:
+        print(f"ℹ️ PR创建已跳过: {pr_result['reason']}")
+    else:
+        print(f"⚠️ PR创建失败: {pr_result['reason']}")
+    
+    # Step 11: 发送飞书通知
+    print("📩 Step 11: 发送飞书通知...")
+    send_feishu_notification(fix_record)
     
     print("\n🎉 自动修复流程全部完成！")
 

@@ -37,7 +37,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 
 @app.get("/users/{user_id}")
 async def get_user(user_id: int):
-    """获取用户信息接口，缺失 age 时返回默认值 0"""
+    """获取用户信息接口：故意访问不存在的 age 字段触发 KeyError"""
     if user_id not in USERS:
         raise HTTPException(status_code=404, detail="User not found")
     
