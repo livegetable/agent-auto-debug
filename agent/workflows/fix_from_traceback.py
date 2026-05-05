@@ -195,13 +195,28 @@ def _preview_text(text: str, max_lines: int = 30) -> str:
 def _pick_isolated_branch_name(base_branch_name: str, max_suffix: int = 99) -> str:
     candidates = [base_branch_name] + [f"{base_branch_name}-{index}" for index in range(1, max_suffix + 1)]
     for candidate in candidates:
-        result = subprocess.run(
+        local_result = subprocess.run(
             ["git", "show-ref", "--verify", "--quiet", f"refs/heads/{candidate}"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             cwd=PROJECT_ROOT,
         )
-        if result.returncode != 0:
+        if local_result.returncode == 0:
+            continue
+
+        # 同时检查远端，避免本地不存在但远端已存在导致 push non-fast-forward
+        remote_result = subprocess.run(
+            ["git", "ls-remote", "--heads", "origin", candidate],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            cwd=PROJECT_ROOT,
+        )
+        remote_exists = remote_result.returncode == 0 and bool((remote_result.stdout or "").strip())
+        if not remote_exists:
             return candidate
     return f"{base_branch_name}-{max_suffix + 1}"
 
