@@ -60,35 +60,38 @@ def push_branch(branch_name: str, repo_path: str = ".") -> Tuple[bool, str]:
 
 
 def create_pull_request(branch_name: str, title: str, body: str, repo_path: str = ".") -> Tuple[bool, str]:
-    """创建GitHub PR，已存在则返回已有URL"""
-    # 从环境变量读取base分支，默认是submission/agent-auto-debug
-    base_branch = os.getenv("GITHUB_PR_BASE_BRANCH", "submission/agent-auto-debug")
-    
-    # 先检查是否已有PR
-    success, output = _run_command(f"gh pr view {branch_name} --json url -q .url", repo_path)
-    if success and output.startswith("http"):
-        return (True, f"PR already exists: {output}")
-    
-    # 创建新PR，显式指定base分支
+    """创建 GitHub PR；只复用 head/base 均匹配且仍然 open 的 PR。"""
+    base_branch = os.getenv("GITHUB_PR_BASE_BRANCH", "develop")
+
+    # 只查询 open 状态、head 分支匹配、base 分支也匹配的 PR
+    # 避免复用旧的 closed PR，或 base 还是 submission/agent-auto-debug 的旧 PR
+    success, output = _run_command(
+        f'gh pr list --head {branch_name} --base {base_branch} --state open --json url --jq ".[0].url"',
+        repo_path
+    )
+
+    if success and output.strip().startswith("http"):
+        return (True, f"PR already exists: {output.strip()}")
+
+    # 创建新 PR，显式指定 base 分支
     success, output = _run_command(
         f'gh pr create --base {base_branch} --head {branch_name} --title "{title}" --body "{body}"',
         repo_path
     )
-    
+
     if success:
-        # 提取PR URL
         lines = output.strip().splitlines()
         for line in lines:
             if line.startswith("https://github.com/"):
                 return (True, line.strip())
         return (True, output.strip())
-    else:
-        return (False, f"Failed to create PR: {output}")
+
+    return (False, f"Failed to create PR: {output}")
 
 
 def run_pr_workflow(record: Dict, repo_path: str = ".") -> Dict:
     """PR创建工作流入口，返回结构化结果"""
-    base_branch = os.getenv("GITHUB_PR_BASE_BRANCH", "submission/agent-auto-debug")
+    base_branch = os.getenv("GITHUB_PR_BASE_BRANCH", "develop")
     
     result = {
         "success": False,
