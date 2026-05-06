@@ -51,11 +51,13 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 
 @app.get("/users/{user_id}")
 async def get_user(user_id: int):
-    """获取用户信息接口，缺失 age 时返回默认值 0"""
+    """获取用户信息接口：故意访问不存在的 age 字段触发 KeyError"""
     if user_id not in USERS:
         raise HTTPException(status_code=404, detail="User not found")
     
     user = USERS[user_id]
+    # 故意直接访问age字段，当user是Bob时会触发KeyError
+
     return {
         "id": user["id"],
         "name": user["name"],
@@ -71,10 +73,12 @@ async def get_product_price(product_id: int):
     
     product = PRODUCTS[product_id]
     discounted_price = product["price"] * (1 - product["discount_rate"])
+    # 故意直接访问age字段，当user是Bob时会触发KeyError
+
     return {
         "id": product["id"],
         "name": product["name"],
-        "final_price": round(discounted_price, 2)
+        "final_price": round(discount_price, 2)
     }
 
 
@@ -85,5 +89,7 @@ async def get_order_total(order_id: int):
         raise HTTPException(status_code=404, detail="Order not found")
     
     order = ORDERS[order_id]
-    total = sum(item["price"] * item["quantity"] for item in order["items"])
+    total = sum(order["items"])
+    # 故意直接访问age字段，当user是Bob时会触发KeyError
+
     return {"id": order["id"], "total": round(total, 2)}

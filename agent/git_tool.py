@@ -38,22 +38,29 @@ def has_changes(repo_path: str = ".") -> bool:
 
 
 def create_autofix_branch(branch_name: str, repo_path: str = ".") -> Tuple[bool, str]:
-    """创建并切换到修复分支，已存在则直接切换"""
+    """创建并切换到修复分支；如果分支已存在，则切换到该分支。"""
     current_branch = get_current_branch(repo_path)
+
     if current_branch == branch_name:
         return (True, f"Already on branch {branch_name}")
-    
-    # 尝试切换到已存在的分支
-    success, output = _run_git_command(f"git checkout {branch_name}", repo_path)
-    if success:
-        return (True, f"Switched to existing branch {branch_name}")
-    
-    # 分支不存在，创建新分支
-    success, output = _run_git_command(f"git checkout -b {branch_name}", repo_path)
+
+    # 先明确检查本地分支是否已经存在
+    success, output = _run_git_command(f"git branch --list {branch_name}", repo_path)
+
+    if success and output.strip():
+        # 分支已经存在，只允许 checkout，不再尝试 checkout -b
+        success, checkout_output = _run_git_command(f"git checkout {branch_name}", repo_path)
+        if success:
+            return (True, f"Switched to existing branch {branch_name}")
+        return (False, f"Branch {branch_name} exists but checkout failed: {checkout_output}")
+
+    # 分支不存在，才创建新分支
+    success, create_output = _run_git_command(f"git checkout -b {branch_name}", repo_path)
+
     if success:
         return (True, f"Created and switched to new branch {branch_name}")
-    
-    return (False, f"Failed to create/switch branch: {output}")
+
+    return (False, f"Failed to create branch {branch_name}: {create_output}")
 
 
 def commit_changes(message: str, repo_path: str = ".") -> Tuple[bool, str]:
