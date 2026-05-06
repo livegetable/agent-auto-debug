@@ -198,13 +198,13 @@ def test_run_pr_workflow_invalid_branch(monkeypatch):
 
 
 def test_create_pull_request_default_base(monkeypatch):
-    """测试创建PR默认使用submission/agent-auto-debug作为base分支"""
+    """测试创建PR默认使用develop作为base分支"""
     from agent.pr_tool import create_pull_request
     
     def mock_run_command(cmd, *args, **kwargs):
         if "gh pr create" in cmd:
             # 检查命令是否包含--base参数
-            assert "--base submission/agent-auto-debug" in cmd
+            assert "--base develop" in cmd
             assert "--head autofix/keyerror-get_user" in cmd
             return (True, "https://github.com/user/repo/pull/1")
         return (False, "")
@@ -263,7 +263,7 @@ def test_run_pr_workflow_includes_base_branch(monkeypatch):
         elif cmd.startswith("git push -u origin autofix/"):
             return (True, "Pushed successfully")
         elif "gh pr create" in cmd:
-            assert "--base submission/agent-auto-debug" in cmd
+            assert "--base develop" in cmd
             return (True, "https://github.com/user/repo/pull/3")
         return (False, "")
     
@@ -272,6 +272,6 @@ def test_run_pr_workflow_includes_base_branch(monkeypatch):
     
     assert result["success"] is True
     assert result["skipped"] is False
-    assert result["base_branch"] == "submission/agent-auto-debug"
+    assert result["base_branch"] == "develop"
     assert result["branch"] == "autofix/keyerror-get_user"
     assert result["pr_url"] == "https://github.com/user/repo/pull/3"

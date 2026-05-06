@@ -12,6 +12,20 @@ USERS = {
     2: {"id": 2, "name": "Bob"}  # Intentionally missing "age" field to trigger KeyError
 }
 
+PRODUCTS = {
+    1: {"id": 1, "name": "Keyboard", "price": 100.0, "discount_rate": 0.1}
+}
+
+ORDERS = {
+    1: {
+        "id": 1,
+        "items": [
+            {"name": "Pen", "price": 5.0, "quantity": 2},
+            {"name": "Notebook", "price": 12.5, "quantity": 2}
+        ]
+    }
+}
+
 # 确保logs目录存在
 LOG_DIR = "logs"
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -37,14 +51,39 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 
 @app.get("/users/{user_id}")
 async def get_user(user_id: int):
-    """获取用户信息接口：故意访问不存在的 age 字段触发 KeyError"""
+    """获取用户信息接口，缺失 age 时返回默认值 0"""
     if user_id not in USERS:
         raise HTTPException(status_code=404, detail="User not found")
     
     user = USERS[user_id]
-    # 故意直接访问age字段，当user是Bob时会触发KeyError
     return {
         "id": user["id"],
         "name": user["name"],
         "age": user.get("age", 0)
     }
+
+
+@app.get("/products/{product_id}/price")
+async def get_product_price(product_id: int):
+    """获取商品折扣后价格"""
+    if product_id not in PRODUCTS:
+        raise HTTPException(status_code=404, detail="Product not found")
+    
+    product = PRODUCTS[product_id]
+    discounted_price = product["price"] * (1 - product["discount_rate"])
+    return {
+        "id": product["id"],
+        "name": product["name"],
+        "final_price": round(discounted_price, 2)
+    }
+
+
+@app.get("/orders/{order_id}/total")
+async def get_order_total(order_id: int):
+    """获取订单总金额"""
+    if order_id not in ORDERS:
+        raise HTTPException(status_code=404, detail="Order not found")
+    
+    order = ORDERS[order_id]
+    total = sum(item["price"] * item["quantity"] for item in order["items"])
+    return {"id": order["id"], "total": round(total, 2)}

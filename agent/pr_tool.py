@@ -61,8 +61,8 @@ def push_branch(branch_name: str, repo_path: str = ".") -> Tuple[bool, str]:
 
 def create_pull_request(branch_name: str, title: str, body: str, repo_path: str = ".") -> Tuple[bool, str]:
     """创建GitHub PR，已存在则返回已有URL"""
-    # 从环境变量读取base分支，默认是submission/agent-auto-debug
-    base_branch = os.getenv("GITHUB_PR_BASE_BRANCH", "submission/agent-auto-debug")
+    # 从环境变量读取base分支，默认是develop
+    base_branch = os.getenv("GITHUB_PR_BASE_BRANCH", "develop")
     
     # 先检查是否已有PR
     success, output = _run_command(f"gh pr view {branch_name} --json url -q .url", repo_path)
@@ -88,7 +88,7 @@ def create_pull_request(branch_name: str, title: str, body: str, repo_path: str 
 
 def run_pr_workflow(record: Dict, repo_path: str = ".") -> Dict:
     """PR创建工作流入口，返回结构化结果"""
-    base_branch = os.getenv("GITHUB_PR_BASE_BRANCH", "submission/agent-auto-debug")
+    base_branch = os.getenv("GITHUB_PR_BASE_BRANCH", "develop")
     
     result = {
         "success": False,

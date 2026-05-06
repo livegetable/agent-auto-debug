@@ -388,7 +388,7 @@ git remote add origin <your-github-repo-url>
 
 ### 配置项
 你可以通过`.env`文件配置PR相关参数：
-- **GITHUB_PR_BASE_BRANCH**：PR要合入的目标分支，默认值为`submission/agent-auto-debug`
+- **GITHUB_PR_BASE_BRANCH**：PR要合入的目标分支，默认值为`develop`
   - 如果需要将PR合入main分支，请设置`GITHUB_PR_BASE_BRANCH=main`，并确保autofix分支和main分支有共同历史
 
 ### 安全设计
