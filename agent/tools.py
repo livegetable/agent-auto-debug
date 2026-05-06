@@ -111,7 +111,14 @@ def read_code(file_path: str, line_no: int, context: int = 10) -> str:
 
 
 def apply_fixed_patch(file_path: str = "app/main.py") -> bool:
-    """针对当前demo bug，把user["age"]修复为user.get("age", 0)，支持幂等"""
+    """针对当前demo bug，修复user age访问问题，支持幂等
+    可以修复:
+    - user["age"] → user.get("age", 0)
+    - user.get("age") → user.get("age", 0)
+    - user.get("age", None) → user.get("age", 0)
+    - user.get('age') → user.get("age", 0)
+    - user.get('age', None) → user.get("age", 0)
+    """
     if not os.path.exists(file_path):
         return False
     
@@ -123,17 +130,20 @@ def apply_fixed_patch(file_path: str = "app/main.py") -> bool:
         print("ℹ️ 代码已经修复过，无需重复修改")
         return True
     
-    # 替换目标代码
-    old_pattern = r'"age": user\["age"\]'
-    new_code = '"age": user.get("age", 0)'
+    # 1. 替换直接访问user["age"]的情况
+    content = re.sub(r'"age": user\["age"\]', '"age": user.get("age", 0)', content)
     
-    if re.search(old_pattern, content):
-        content = re.sub(old_pattern, new_code, content)
-        with open(file_path, "w", encoding="utf-8") as f:
-            f.write(content)
-        return True
+    # 2. 替换各种不正确的get用法
+    # 匹配双引号形式
+    content = re.sub(r'"age": user\.get\("age"(?:,.*?)?\)', '"age": user.get("age", 0)', content)
+    # 匹配单引号形式
+    content = re.sub(r'"age": user\.get\(\'age\'(?:,.*?)?\)', '"age": user.get("age", 0)', content)
     
-    return False
+    with open(file_path, "w", encoding="utf-8") as f:
+        f.write(content)
+    
+    # 确认修复成功
+    return '"age": user.get("age", 0)' in content
 
 
 def update_tests_for_fix(test_file_path: str = "tests/test_app.py") -> bool:
@@ -279,6 +289,7 @@ def write_fix_record(record: dict, record_id: str = "bug_001") -> str:
 - 修改文件: {record.get('target_file', '未知')}
 - 错误行号: {record.get('target_line', 0)}
 - 出错函数: {record.get('function_name', '未知')}
+{f"- 第一次测试失败原因: {record.get('first_test_failure_reason', '')}" if record.get('first_test_failure_reason') else ""}
 
 ## Traceback 摘要
 ```

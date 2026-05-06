@@ -115,9 +115,42 @@ def main():
     # 7. 运行测试验证
     print("🧪 Step 7: 运行测试验证修复效果...")
     test_passed, test_output = run_tests()
-    if test_passed:
-        print("✅ 所有测试通过！修复成功")
-    else:
+    first_test_failure_reason = ""
+    
+    # LLM修复失败后触发固定规则fallback
+    if fix_mode == "LLM" and not test_passed:
+        print("⚠️ LLM 补丁未通过测试，尝试固定规则 fallback...")
+        first_test_failure_reason = "First test failed, LLM patch didn't pass tests"
+        fix_mode = "LLM + Fixed Rule Fallback"
+        
+        # 应用固定规则补丁
+        fix_success = apply_fixed_patch(target_file)
+        if not fix_success:
+            print("❌ 固定规则 fallback 失败")
+            return
+        
+        # 更新测试用例
+        print("🔧 重新更新测试用例...")
+        test_update_success = update_tests_for_fix()
+        if not test_update_success:
+            print("❌ 测试用例更新失败")
+            return
+        print("✅ 测试用例更新完成")
+        
+        # 再次运行测试
+        print("🧪 Step 7.1: 重新运行测试验证 fallback 效果...")
+        test_passed, test_output = run_tests()
+        
+        if test_passed:
+            print("✅ 固定规则 fallback 修复成功，所有测试通过！")
+        else:
+            print("❌ 固定规则 fallback 后测试仍未通过，修复失败")
+            print("测试输出:")
+            print(test_output)
+            return
+    
+    elif not test_passed:
+        # 非LLM模式测试失败直接返回
         print("❌ 测试未通过，修复失败")
         print("测试输出:")
         print(test_output)
@@ -136,7 +169,8 @@ def main():
         "test_output": test_output,
         "fix_mode": fix_mode,
         "root_cause": root_cause,
-        "fix_strategy": fix_strategy
+        "fix_strategy": fix_strategy,
+        "first_test_failure_reason": first_test_failure_reason
     }
     record_path = write_fix_record(fix_record)
     print(f"✅ 修复记录已保存到: {record_path}")

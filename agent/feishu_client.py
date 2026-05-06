@@ -24,9 +24,12 @@ def send_feishu_notification(record: dict) -> bool:
             {"tag": "div", "text": {"tag": "lark_md", "content": f"**修改文件**：{record.get('target_file', '未知')}"}},
             {"tag": "div", "text": {"tag": "lark_md", "content": f"**出错函数**：{record.get('function_name', '未知')}"}},
             {"tag": "div", "text": {"tag": "lark_md", "content": f"**修复模式**：{record.get('fix_mode', '未知')}"}},
+            {f"tag": "div", "text": {"tag": "lark_md", "content": f"**第一次测试失败**：{record.get('first_test_failure_reason', '')}"}} if record.get('first_test_failure_reason') else None,
             {"tag": "div", "text": {"tag": "lark_md", "content": f"**测试结果**：✅ Passed"}},
             {"tag": "div", "text": {"tag": "lark_md", "content": f"**修复记录**：{record.get('record_path', 'fix_records/bug_001.md')}"}}
         ]
+        # 过滤掉None元素
+        elements = [e for e in elements if e is not None]
         
         # 添加Git信息
         git_result = record.get('git_result', {})

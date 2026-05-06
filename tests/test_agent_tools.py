@@ -1,4 +1,6 @@
-from agent.tools import parse_traceback, parse_llm_json
+from agent.tools import parse_traceback, parse_llm_json, apply_fixed_patch
+import tempfile
+import os
 
 
 def test_parse_traceback_skip_third_party():
@@ -101,3 +103,87 @@ def test_parse_llm_json_missing_fields():
 """
     result = parse_llm_json(incomplete_json)
     assert result is None
+
+
+def test_apply_fixed_patch_fix_none_default():
+    """测试apply_fixed_patch可以把user.get("age", None)修复为user.get("age", 0)"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        app_dir = os.path.join(tmpdir, "app")
+        os.makedirs(app_dir)
+        file_path = os.path.join(app_dir, "main.py")
+        
+        content = """
+        return {
+            "id": user["id"],
+            "name": user["name"],
+            "age": user.get("age", None)
+        }
+        """
+        
+        with open(file_path, "w") as f:
+            f.write(content)
+        
+        success = apply_fixed_patch(file_path)
+        assert success is True
+        
+        with open(file_path, "r") as f:
+            new_content = f.read()
+        
+        assert '"age": user.get("age", 0)' in new_content
+        assert '"age": user.get("age", None)' not in new_content
+
+
+def test_apply_fixed_patch_fix_no_default():
+    """测试apply_fixed_patch可以把user.get("age")修复为user.get("age", 0)"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        app_dir = os.path.join(tmpdir, "app")
+        os.makedirs(app_dir)
+        file_path = os.path.join(app_dir, "main.py")
+        
+        content = """
+        return {
+            "id": user["id"],
+            "name": user["name"],
+            "age": user.get("age")
+        }
+        """
+        
+        with open(file_path, "w") as f:
+            f.write(content)
+        
+        success = apply_fixed_patch(file_path)
+        assert success is True
+        
+        with open(file_path, "r") as f:
+            new_content = f.read()
+        
+        assert '"age": user.get("age", 0)' in new_content
+        assert '"age": user.get("age")' not in new_content
+
+
+def test_apply_fixed_patch_fix_single_quote():
+    """测试apply_fixed_patch可以修复单引号形式的user.get('age')"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        app_dir = os.path.join(tmpdir, "app")
+        os.makedirs(app_dir)
+        file_path = os.path.join(app_dir, "main.py")
+        
+        content = """
+        return {
+            "id": user["id"],
+            "name": user["name"],
+            "age": user.get('age', None)
+        }
+        """
+        
+        with open(file_path, "w") as f:
+            f.write(content)
+        
+        success = apply_fixed_patch(file_path)
+        assert success is True
+        
+        with open(file_path, "r") as f:
+            new_content = f.read()
+        
+        assert '"age": user.get("age", 0)' in new_content
+        assert "'age'" not in new_content
