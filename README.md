@@ -386,6 +386,11 @@ git remote add origin <your-github-repo-url>
 ```
 只需要配置一次，后续自动生效。
 
+### 配置项
+你可以通过`.env`文件配置PR相关参数：
+- **GITHUB_PR_BASE_BRANCH**：PR要合入的目标分支，默认值为`submission/agent-auto-debug`
+  - 如果需要将PR合入main分支，请设置`GITHUB_PR_BASE_BRANCH=main`，并确保autofix分支和main分支有共同历史
+
 ### 安全设计
 - ✅ **仅允许推送autofix/*分支**：绝对不会push main/master等生产分支
 - ✅ **无Token硬编码**：完全使用GitHub CLI的系统登录状态，无需在代码或.env中配置任何Token

@@ -1,6 +1,10 @@
 import os
 import subprocess
 from typing import Tuple, Dict
+from dotenv import load_dotenv
+
+# 加载环境变量
+load_dotenv()
 
 
 def _run_command(cmd: str, repo_path: str = ".", capture_output: bool = True) -> Tuple[bool, str]:
@@ -57,14 +61,17 @@ def push_branch(branch_name: str, repo_path: str = ".") -> Tuple[bool, str]:
 
 def create_pull_request(branch_name: str, title: str, body: str, repo_path: str = ".") -> Tuple[bool, str]:
     """创建GitHub PR，已存在则返回已有URL"""
+    # 从环境变量读取base分支，默认是submission/agent-auto-debug
+    base_branch = os.getenv("GITHUB_PR_BASE_BRANCH", "submission/agent-auto-debug")
+    
     # 先检查是否已有PR
     success, output = _run_command(f"gh pr view {branch_name} --json url -q .url", repo_path)
     if success and output.startswith("http"):
         return (True, f"PR already exists: {output}")
     
-    # 创建新PR
+    # 创建新PR，显式指定base分支
     success, output = _run_command(
-        f'gh pr create --title "{title}" --body "{body}" --head {branch_name}',
+        f'gh pr create --base {base_branch} --head {branch_name} --title "{title}" --body "{body}"',
         repo_path
     )
     
@@ -81,11 +88,14 @@ def create_pull_request(branch_name: str, title: str, body: str, repo_path: str 
 
 def run_pr_workflow(record: Dict, repo_path: str = ".") -> Dict:
     """PR创建工作流入口，返回结构化结果"""
+    base_branch = os.getenv("GITHUB_PR_BASE_BRANCH", "submission/agent-auto-debug")
+    
     result = {
         "success": False,
         "skipped": True,
         "reason": "",
         "branch": "",
+        "base_branch": base_branch,
         "pr_url": "",
         "message": ""
     }

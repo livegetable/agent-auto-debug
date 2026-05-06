@@ -195,3 +195,83 @@ def test_run_pr_workflow_invalid_branch(monkeypatch):
     result = run_pr_workflow(record)
     assert result["skipped"] is True
     assert "must start with 'autofix/'" in result["reason"]
+
+
+def test_create_pull_request_default_base(monkeypatch):
+    """测试创建PR默认使用submission/agent-auto-debug作为base分支"""
+    from agent.pr_tool import create_pull_request
+    
+    def mock_run_command(cmd, *args, **kwargs):
+        if "gh pr create" in cmd:
+            # 检查命令是否包含--base参数
+            assert "--base submission/agent-auto-debug" in cmd
+            assert "--head autofix/keyerror-get_user" in cmd
+            return (True, "https://github.com/user/repo/pull/1")
+        return (False, "")
+    
+    monkeypatch.setattr("agent.pr_tool._run_command", mock_run_command)
+    success, msg = create_pull_request("autofix/keyerror-get_user", "Test PR", "Test body")
+    assert success is True
+    assert "https://github.com/user/repo/pull/1" in msg
+
+
+def test_create_pull_request_env_base(monkeypatch):
+    """测试通过环境变量GITHUB_PR_BASE_BRANCH覆盖base分支"""
+    import os
+    from agent.pr_tool import create_pull_request
+    
+    # 设置环境变量
+    monkeypatch.setenv("GITHUB_PR_BASE_BRANCH", "main")
+    
+    def mock_run_command(cmd, *args, **kwargs):
+        if "gh pr create" in cmd:
+            # 检查命令是否使用环境变量设置的base
+            assert "--base main" in cmd
+            assert "--head autofix/keyerror-get_user" in cmd
+            return (True, "https://github.com/user/repo/pull/2")
+        return (False, "")
+    
+    monkeypatch.setattr("agent.pr_tool._run_command", mock_run_command)
+    success, msg = create_pull_request("autofix/keyerror-get_user", "Test PR", "Test body")
+    assert success is True
+    assert "https://github.com/user/repo/pull/2" in msg
+    
+    # 清除环境变量
+    monkeypatch.delenv("GITHUB_PR_BASE_BRANCH", raising=False)
+
+
+def test_run_pr_workflow_includes_base_branch(monkeypatch):
+    """测试run_pr_workflow返回结果包含base_branch"""
+    record = {
+        "git_result": {"success": True, "branch": "autofix/keyerror-get_user"},
+        "error_type": "KeyError",
+        "function_name": "get_user",
+        "traceback_summary": "KeyError: 'age'",
+        "fix_mode": "LLM",
+        "root_cause": "Missing age field",
+        "fix_strategy": "Use get() method",
+        "record_path": "fix_records/bug_001.md"
+    }
+    
+    def mock_run_command(cmd, *args, **kwargs):
+        if cmd == "git remote get-url origin":
+            return (True, "git@github.com:user/repo.git")
+        elif cmd == "gh --version":
+            return (True, "gh version 2.40.1")
+        elif cmd == "gh auth status":
+            return (True, "Logged in")
+        elif cmd.startswith("git push -u origin autofix/"):
+            return (True, "Pushed successfully")
+        elif "gh pr create" in cmd:
+            assert "--base submission/agent-auto-debug" in cmd
+            return (True, "https://github.com/user/repo/pull/3")
+        return (False, "")
+    
+    monkeypatch.setattr("agent.pr_tool._run_command", mock_run_command)
+    result = run_pr_workflow(record)
+    
+    assert result["success"] is True
+    assert result["skipped"] is False
+    assert result["base_branch"] == "submission/agent-auto-debug"
+    assert result["branch"] == "autofix/keyerror-get_user"
+    assert result["pr_url"] == "https://github.com/user/repo/pull/3"

@@ -257,6 +257,19 @@ def write_fix_record(record: dict, record_id: str = "bug_001") -> str:
     os.makedirs("fix_records", exist_ok=True)
     record_path = f"fix_records/{record_id}.md"
     
+    # 提前处理条件内容，避免f-string中的复杂逻辑
+    if record.get('fix_mode') == 'LLM':
+        llm_content = f"""## LLM 根因分析
+{record.get('root_cause', '')}
+
+## LLM 修复策略
+{record.get('fix_strategy', '')}
+"""
+    else:
+        llm_content = """## 固定规则修复策略
+将 `user["age"]` 修改为 `user.get("age", 0)`，避免缺少age字段时触发KeyError。
+"""
+    
     content = f"""# 自动修复记录 {record_id}
 
 ## 基本信息
@@ -272,8 +285,7 @@ def write_fix_record(record: dict, record_id: str = "bug_001") -> str:
 {record.get('traceback_summary', '')}
 ```
 
-{f"## LLM 根因分析\n{record.get('root_cause', '')}\n" if record.get('fix_mode') == 'LLM' else ""}
-{f"## LLM 修复策略\n{record.get('fix_strategy', '')}\n" if record.get('fix_mode') == 'LLM' else "## 固定规则修复策略\n将 `user[\"age\"]` 修改为 `user.get(\"age\", 0)`，避免缺少age字段时触发KeyError。\n"}
+{llm_content}
 
 ## 相关代码上下文
 ```python
@@ -287,6 +299,7 @@ def write_fix_record(record: dict, record_id: str = "bug_001") -> str:
 
 ## GitHub PR
 {f"- PR 状态：✅ 创建成功" if record.get('pr_result', {}).get('success') else f"- PR 状态：ℹ️ 已跳过 - {record.get('pr_result', {}).get('reason', '未知原因')}"}
+{f"- Base Branch：{record.get('pr_result', {}).get('base_branch', '未知')}"}
 {f"- PR 链接：{record.get('pr_result', {}).get('pr_url', '')}" if record.get('pr_result', {}).get('success') else ""}
 
 ## 测试结果

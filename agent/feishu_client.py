@@ -42,6 +42,9 @@ def send_feishu_notification(record: dict) -> bool:
         pr_result = record.get('pr_result', {})
         if pr_result:
             elements.append({"tag": "hr"})
+            base_branch = pr_result.get('base_branch', '未知')
+            elements.append({"tag": "div", "text": {"tag": "lark_md", "content": f"**PR Base Branch**：{base_branch}"}})
+            
             if pr_result.get('success'):
                 pr_url = pr_result.get('pr_url', '')
                 elements.append({"tag": "div", "text": {"tag": "lark_md", "content": f"**PR 状态**：Created"}})
